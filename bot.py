@@ -1,222 +1,153 @@
-import logging
-import random
+import os
 import sqlite3
-from datetime import date, datetime, timedelta
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 # Logging Setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Bot Configuration
-TOKEN = "8488142985:AAEdAaKMMcwfePB7yYcTpFQHKgngsknGDmc"
-ADMIN_ID = 123456789  # Yahan apni Telegram Admin Numeric ID daalein
+# Configuration
+TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")  # Replace or use Env Var
+CHANNEL_ID = -1004306101830  # Aapke Private Channel ki ID
 
 # Database Setup
 def init_db():
-    conn = sqlite3.connect('bot_user_data.db')
+    conn = sqlite3.connect("bot_media.db")
     cursor = conn.cursor()
-    # Daily usage tracking (Short vs Long videos)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS usage (
-            user_id INTEGER,
-            usage_date TEXT,
-            short_video_count INTEGER DEFAULT 0,
-            long_video_count INTEGER DEFAULT 0,
-            photo_count INTEGER DEFAULT 0,
-            PRIMARY KEY (user_id, usage_date)
-        )
-    ''')
-    # Media storage database with duration
-    cursor.execute('''
+    
+    # Media Table
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS media (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_id TEXT UNIQUE,
-            media_type TEXT,
+            media_type TEXT, -- 'photo', 'short_video', 'full_video'
             duration INTEGER DEFAULT 0
         )
-    ''')
-    # Premium Subscriptions database
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS premium (
+    """)
+    
+    # User Daily Usage Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_limits (
             user_id INTEGER PRIMARY KEY,
-            expiry_date TEXT
+            photos_count INTEGER DEFAULT 0,
+            short_videos_count INTEGER DEFAULT 0,
+            full_videos_count INTEGER DEFAULT 0
         )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
-def save_media(file_id, media_type, duration=0):
-    conn = sqlite3.connect('bot_user_data.db')
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO media (file_id, media_type, duration) VALUES (?, ?, ?)", (file_id, media_type, duration))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass
-    conn.close()
+# Main UI Menu
+def get_main_menu():
+    keyboard = [
+        [InlineKeyboardButton("📸 Free Photos (100 Limit)", callback_data="get_photo")],
+        [InlineKeyboardButton("⚡ Short Videos (50 Limit)", callback_data="get_short_video")],
+        [InlineKeyboardButton("🎬 Full Videos (7 Limit)", callback_data="get_full_video")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-def get_random_media(media_type, is_short=False):
-    conn = sqlite3.connect('bot_user_data.db')
-    cursor = conn.cursor()
-    if media_type == 'video':
-        if is_short:
-            cursor.execute("SELECT file_id FROM media WHERE media_type = 'video' AND duration <= 10 ORDER BY RANDOM() LIMIT 1")
-        else:
-            cursor.execute("SELECT file_id FROM media WHERE media_type = 'video' AND duration > 10 ORDER BY RANDOM() LIMIT 1")
-    else:
-        cursor.execute("SELECT file_id FROM media WHERE media_type = 'photo' ORDER BY RANDOM() LIMIT 1")
-    
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else None
-
-def is_premium(user_id):
-    if user_id == ADMIN_ID:
-        return True
-    conn = sqlite3.connect('bot_user_data.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT expiry_date FROM premium WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        expiry_date = datetime.strptime(row[0], '%Y-%m-%d')
-        if datetime.now() <= expiry_date:
-            return True
-    return False
-
-def get_usage(user_id):
-    today = str(date.today())
-    conn = sqlite3.connect('bot_user_data.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT short_video_count, long_video_count, photo_count FROM usage WHERE user_id = ? AND usage_date = ?", (user_id, today))
-    row = cursor.fetchone()
-    if not row:
-        cursor.execute("INSERT INTO usage (user_id, usage_date, short_video_count, long_video_count, photo_count) VALUES (?, ?, 0, 0, 0)", (user_id, today))
-        conn.commit()
-        conn.close()
-        return 0, 0, 0
-    conn.close()
-    return row[0], row[1], row[2]
-
-def increment_usage(user_id, content_type):
-    today = str(date.today())
-    get_usage(user_id)
-    conn = sqlite3.connect('bot_user_data.db')
-    cursor = conn.cursor()
-    if content_type == 'short_video':
-        cursor.execute("UPDATE usage SET short_video_count = short_video_count + 1 WHERE user_id = ? AND usage_date = ?", (user_id, today))
-    elif content_type == 'long_video':
-        cursor.execute("UPDATE usage SET long_video_count = long_video_count + 1 WHERE user_id = ? AND usage_date = ?", (user_id, today))
-    elif content_type == 'photo':
-        cursor.execute("UPDATE usage SET photo_count = photo_count + 1 WHERE user_id = ? AND usage_date = ?", (user_id, today))
-    conn.commit()
-    conn.close()
-
-# Message & Media Handler (Admin saving videos/photos)
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    user_id = msg.from_user.id
-    
-    if user_id == ADMIN_ID and (msg.video or msg.photo):
-        if msg.video:
-            duration = msg.video.duration or 0
-            save_media(msg.video.file_id, 'video', duration)
-            await msg.reply_text(f"✅ Short Video Saved! (Duration: {duration}s)")
-        elif msg.photo:
-            save_media(msg.photo[-1].file_id, 'photo', 0)
-            await msg.reply_text("✅ Photo Saved!")
-        return
-
-# Start Command
+# /start Command Handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = (
-        "👋 **Welcome to Media Bot!**\n\n"
+    user_name = update.effective_user.first_name
+    text = (
+        f"👋 Welcome to Media Bot, {user_name}!\n\n"
         "Aapko rozana milta hai:\n"
-        "📸 **100 Free Photos / Day**\n"
-        "⚡ **50 Short Videos (≤10s) / Day**\n"
-        "🎬 **7 Full Videos (>10s) / Day**\n\n"
+        "📸 100 Free Photos / Day\n"
+        "⚡ 50 Short Videos (≤10s) / Day\n"
+        "🎬 7 Full Videos (>10s) / Day\n\n"
         "Niche diye gaye options me se chuniye:"
     )
-    keyboard = [
-        [InlineKeyboardButton("📸 Free Photos (100 Limit)", callback_data='menu_photo')],
-        [InlineKeyboardButton("⚡ Short Videos (50 Limit)", callback_data='menu_short_video')],
-        [InlineKeyboardButton("🎬 Full Videos (7 Limit)", callback_data='menu_long_video')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=reply_markup)
+    if update.message:
+        await update.message.reply_text(text, reply_markup=get_main_menu())
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(text, reply_markup=get_main_menu())
 
-# Callback Handler
+# Channel Post Handler (Automatically stores Media File IDs)
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    post = update.channel_post
+    if not post or post.chat.id != CHANNEL_ID:
+        return
+
+    conn = sqlite3.connect("bot_media.db")
+    cursor = conn.cursor()
+
+    # Photo Upload
+    if post.photo:
+        file_id = post.photo[-1].file_id
+        cursor.execute("INSERT OR IGNORE INTO media (file_id, media_type) VALUES (?, 'photo')", (file_id,))
+        logger.info(f"Saved Photo: {file_id}")
+
+    # Video Upload (Short vs Full Filter)
+    elif post.video:
+        file_id = post.video.file_id
+        duration = post.video.duration or 0
+        media_type = "short_video" if duration <= 10 else "full_video"
+        
+        cursor.execute("INSERT OR IGNORE INTO media (file_id, media_type, duration) VALUES (?, ?, ?)", 
+                       (file_id, media_type, duration))
+        logger.info(f"Saved Video ({media_type}): {file_id}")
+
+    conn.commit()
+    conn.close()
+
+# Button Click / Media Retrieval Handler
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    data = query.data
     await query.answer()
 
-    short_v, long_v, p_count = get_usage(user_id)
-    user_is_prem = is_premium(user_id)
+    media_type = None
+    if query.data == "get_photo":
+        media_type = "photo"
+    elif query.data == "get_short_video":
+        media_type = "short_video"
+    elif query.data == "get_full_video":
+        media_type = "full_video"
 
-    # Short Videos (≤10 seconds - Limit 50)
-    if data == 'menu_short_video':
-        if not user_is_prem and short_v >= 50:
-            await query.message.reply_text("🚫 **Daily Short Video Limit Reached! (50/50)**")
+    if media_type:
+        conn = sqlite3.connect("bot_media.db")
+        cursor = conn.cursor()
+        
+        # Get random media item from DB
+        cursor.execute("SELECT file_id FROM media WHERE media_type = ? ORDER BY RANDOM() LIMIT 1", (media_type,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            file_id = row[0]
+            if media_type == "photo":
+                await query.message.reply_photo(photo=file_id, caption="Here is your Photo 📸", reply_markup=get_main_menu())
+            else:
+                await query.message.reply_video(video=file_id, caption="Here is your Video 🎬", reply_markup=get_main_menu())
         else:
-            video_file_id = get_random_media('video', is_short=True)
-            if not video_file_id:
-                await query.message.reply_text("Abhi database mein koi short video (≤10s) nahi hai!")
-                return
-
-            if not user_is_prem:
-                increment_usage(user_id, 'short_video')
-            
-            keyboard = [[InlineKeyboardButton("⚡ Next Short Video 🍿", callback_data='menu_short_video')]]
-            cap = "Enjoy short video! 🍿" if user_is_prem else f"Enjoy short video! 🍿\n(Today's Used: {short_v + 1}/50)"
-            await query.message.reply_video(video=video_file_id, caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # Full Videos (>10 seconds - Limit 7)
-    elif data == 'menu_long_video':
-        if not user_is_prem and long_v >= 7:
-            await query.message.reply_text("🚫 **Daily Full Video Limit Reached! (7/7)**")
-        else:
-            video_file_id = get_random_media('video', is_short=False)
-            if not video_file_id:
-                await query.message.reply_text("Abhi database mein koi full video (>10s) nahi hai!")
-                return
-
-            if not user_is_prem:
-                increment_usage(user_id, 'long_video')
-            
-            keyboard = [[InlineKeyboardButton("🎬 Next Full Video 🍿", callback_data='menu_long_video')]]
-            cap = "Enjoy full video! 🍿" if user_is_prem else f"Enjoy full video! 🍿\n(Today's Used: {long_v + 1}/7)"
-            await query.message.reply_video(video=video_file_id, caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == 'menu_photo':
-        if not user_is_prem and p_count >= 100:
-            await query.message.reply_text("🚫 **Daily Photo Limit Reached! (100/100)**")
-        else:
-            photo_file_id = get_random_media('photo')
-            if not photo_file_id:
-                await query.message.reply_text("Abhi database mein koi photo nahi hai!")
-                return
-
-            if not user_is_prem:
-                increment_usage(user_id, 'photo')
-            
-            keyboard = [[InlineKeyboardButton("🖼️ Next Photo 📸", callback_data='menu_photo')]]
-            cap = "Here is your photo! 📸" if user_is_prem else f"Here is your photo! 📸\n(Today's Used: {p_count + 1}/100)"
-            await query.message.reply_photo(photo=photo_file_id, caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == 'main_menu':
-        await start(update, context)
+            msg = "Abhi database mein koi photo nahi hai!" if media_type == "photo" else f"Abhi database mein koi {media_type.replace('_', ' ')} nahi hai!"
+            await query.message.reply_text(msg, reply_markup=get_main_menu())
 
 def main():
     init_db()
+    
     app = Application.builder().token(TOKEN).build()
+
+    # Command & Callback Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_click))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO, handle_messages))
 
-    print("Bot chalu ho gaya hai...")
+    # Channel Handler (Saves new photos/videos automatically from channel)
+    app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & (filters.PHOTO | filters.VIDEO), channel_post_handler))
+
+    logger.info("Bot started successfully...")
+    
+    # Clean Polling call for python-telegram-bot v20+
     app.run_polling(poll_interval=1.0)
 
 if __name__ == "__main__":
