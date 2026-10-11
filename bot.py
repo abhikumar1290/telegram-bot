@@ -217,7 +217,7 @@ def main():
     app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO, handle_messages))
 
     print("Bot chalu ho gaya hai...")
-    app.run_polling(poll_interval=1.0, timeout=30, read_timeout=30, connect_timeout=30)
+    app.run_polling(poll_interval=1.0)
 
 if __name__ == "__main__":
     main()
