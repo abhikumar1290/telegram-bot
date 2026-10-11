@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import logging
+from threading import Thread
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,6 +13,17 @@ from telegram.ext import (
     filters,
 )
 
+# Flask Keep-Alive Server for Render
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Bot is active and running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
+
 # Logging Setup
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -18,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TOKEN ="8488142985:AAEdAaKMMcwfePB7yYcTpFQHKgngsknGDmc" 
+TOKEN = "8488142985:AAEdAaKMMcwfePB7yYcTpFQHKgngsknGDmc"
 CHANNEL_ID = -1004306101830  # Aapke Private Channel ki ID
 
 # Database Setup
@@ -118,7 +131,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect("bot_media.db")
         cursor = conn.cursor()
         
-        # Get random media item from DB
         cursor.execute("SELECT file_id FROM media WHERE media_type = ? ORDER BY RANDOM() LIMIT 1", (media_type,))
         row = cursor.fetchone()
         conn.close()
@@ -136,6 +148,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
     
+    # Start Flask in background thread to satisfy Render web service port requirement
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    
     app = Application.builder().token(TOKEN).build()
 
     # Command & Callback Handlers
@@ -145,9 +162,8 @@ def main():
     # Channel Handler (Saves new photos/videos automatically from channel)
     app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & (filters.PHOTO | filters.VIDEO), channel_post_handler))
 
-    logger.info("Bot started successfully...")
+    logger.info("Bot started successfully with Flask server...")
     
-    # Clean Polling call for python-telegram-bot v20+
     app.run_polling(poll_interval=1.0)
 
 if __name__ == "__main__":
