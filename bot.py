@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")  # Replace or use Env Var
+TOKEN =("8488142985:AAEdAaKMMcwfePB7yYcTpFQHKgngsknGDmc") 
 CHANNEL_ID = -1004306101830  # Aapke Private Channel ki ID
 
 # Database Setup
